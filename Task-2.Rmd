@@ -1,0 +1,155 @@
+---
+title: "Northern Norways New Companies"
+author: "Lucas Stark"
+date: "01 10 2019"
+output: 
+  html_document:
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+library(plyr) #for ddply()
+library(tidyverse)
+library(rvest)
+
+```
+
+# Research Question
+
+The following research was conducted to answer the following question: "How many new companies were registered in Northern Norway per county and month in 2019?"
+
+# Data Source
+```{r importing, include=FALSE}
+#set url link
+link <- read_html("https://w2.brreg.no/kunngjoring/kombisok.jsp?datoFra=01.01.2019&datoTil=30.09.2019&id_region=100&id_fylke=-+-+-&id_niva1=2&id_bransje1=0")
+
+#prepare and import
+dat_pre <- html_nodes(link, xpath = "//table")
+dat <- as.data.frame(html_table(html_nodes(dat_pre, "table")))
+```
+
+
+The data was imported from the website of [Bronnoysundregistrene of Norway](https://w2.brreg.no/kunngjoring/kombisok.jsp?datoFra=01.01.2019&datoTil=30.09.2019&id_region=100&id_fylke=-+-+-&id_niva1=2&id_bransje1=0).
+
+# Data Cleaning
+
+```{r first cleaning, include=FALSE}
+#get each data set for every country
+#there is some rubbish in the beginning and then a heading over every of the countys entries
+#name variables
+names(dat) <- c("x1","company","x2","number","x3","date","x4","ann_type","x5")
+
+#get rid of first unneccessary columns
+dat <- dat[,c("company","x2","number","date","ann_type")]
+
+#get line numbers that seperate the counties
+dat$x2 <- as.factor(dat$x2)
+dat$x2[dat$x2==""] <- NA
+summary(dat$x2)
+x <- which(is.na(dat$x2)==F)
+x <- c(x,length(dat$x2)+1) #add line of end of df (plus one for following command)
+
+#split dataframe in frames for each county
+dat_list <- as.list(NA)
+for(i in 1:(length(x)-1)){
+  dat_sub <- dat[(x[i]+1):(x[i+1]-1),]
+  dat_sub <- as.data.frame(dat_sub)
+  dat_list[[i]] <- dat_sub
+}
+
+#assign new column to every data frame with county name
+for(i in 1:(length(dat_list))){
+  dat_list[[i]]$county <- levels(dat_list[[1]]$x2)[i+1]
+}
+
+#create new dataset with all existing data
+dat2 <- NA
+for(i in 1:(length(dat_list))){
+  dat2 <- rbind(dat2,dat_list[[i]])
+}
+
+```
+
+The data was cleaned in two major steps. The first one focused on getting the dataset for each seperate county of Northern Norway, getting rid of chunk lines and joining the datasets again with a new variable for the county name. 
+
+```{r second cleaning, include=FALSE}
+#delete unneccessary second column and reorder them
+dat2 <- dat2[,c("county","company","number","date","ann_type")]
+
+#delete all rows with only missing values
+dat2 <- dat2[dat2$company!="",]
+dat2 <- dat2[-is.na(dat2$company),]
+
+#make date as date variable and others to factors
+dat_clean <- dat2 %>%
+  mutate(date = as.Date(date,format("%d.%m.%Y")),
+         county = as.factor(county),
+         company = as.factor(company),
+         number = as.factor(number),
+         ann_type = as.factor(ann_type))
+
+#delete all "Rettelse av foretaksnavn" (Correction of company name)
+dat_clean <- dat_clean[!dat_clean$ann_type=="Rettelse av foretaksnavn",]
+
+
+#a final check
+summary(dat_clean)
+str(dat_clean)
+
+#some companies have more than one entry. ?
+dat_clean[dat_clean$company=="NAPOLEON EIENDOM AS",]
+
+```
+
+The second step focused on selecting the necessary variables and transforming them into the appropriate type.
+
+In summary the structure of the final and cleaned dataset looks like this:
+
+```{r summary}
+str(dat_clean)
+```
+
+# Data Analysis
+
+To find out how many companies have been registered per month and per county the following linegraph was created.
+
+```{r Plot}
+# Datensatz vorbereiten
+dat_graph <- dat_clean %>%
+  mutate(month = lubridate::month(date)) %>%
+  mutate(month = paste0("2019","-",month,"-","01")) %>%
+  mutate(month = lubridate::ymd(month)) %>%
+  ddply(c("county", "month"), summarise, n=as.numeric(length(company)))
+
+# Plot kreieren
+dat_graph %>%
+  ggplot(aes(x=month,y=n, color=county, group=county)) +
+  facet_grid(~county) +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(limits =  c(0,150),
+                     breaks=seq(0, 150, by = 10)) +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "1 month") +
+  ggtitle("Number of newly registered companys per county and month in Northern Norway")  + 
+  theme_light() +
+  theme(legend.position = "none") + 
+  theme(axis.title.x=element_blank(), axis.title.y=element_blank()) +
+  geom_hline(aes(yintercept = mean(n)), color="grey", linetype="dashed" ) +
+  geom_smooth(method = "lm", se = FALSE)
+
+dat_maxmonth <- dat_graph %>% 
+  group_by(month) %>% 
+  summarise(max_month = mean(n)) %>%
+  as.data.frame()
+
+maxmonth <- max(dat_maxmonth$max_month)
+```
+
+As you can see, in general, most new companies were registered in `r dat_clean$county[max(summary(dat_clean$county))][1]`.
+The overall mean of new registrations per month is `r round(mean(dat_graph$n),2)` which is depicted as the dashed line in the graphic.
+The month with the most new registrations is `r lubridate::month(dat_maxmonth[dat_maxmonth$max_month==maxmonth,1][1], label = T, abbr = FALSE)` with an average of `r maxmonth` new registrations.
+
